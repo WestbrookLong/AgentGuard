@@ -1,0 +1,38 @@
+
+name: AgentGuard Tests
+
+on:
+  push:
+    branches:
+      - integration/main-readiness
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Run standalone B1 tests
+        run: python -c "import runpy; runpy.run_path('tests/test_b1.py', run_name='__main__')"
+
+      - name: Run scripted security demo
+        run: python -m evaluation.export_demo
+
+      - name: Check evaluation plan
+        run: python -m evaluation.run_matrix --dry-run
