@@ -2,9 +2,67 @@
 
 **We trace how untrusted input becomes an "authorized decision" across AI agents.**
 
-AgentGuard is a testing and monitoring layer for companies that run several AI agents sharing memory. It records every message, memory read/write and tool call between agents, labels each piece of data as *trusted* or *untrusted* based on where it came from, and checks risky actions against company policy. When something goes wrong, it shows the exact path from the untrusted input to the harmful action, and the step where a false claim was accepted as fact.
+AgentGuard combines a flat collaboration Room prototype with an offline security test engine. The Room records agent messages, provenance, threads, and scoped memory. The Guard replays recorded actions, propagates trust labels, checks risky refunds against policy, and shows a trace from untrusted input to a violating action. The standalone Guard API also supports execution-time `observe` and `enforce` scenarios for the original ShopCo tests.
+
+## Current Room + Guard integration contract
+
+This section is the **current integration specification**. The team assignments and `shop/` pipeline below are the original standalone demo plan; they do not describe the live Room runtime. `contract.py` remains the Guard demo contract so existing B1/B2 tests keep working. The platform and Guard meet through [`guard/room_adapter.py`](guard/room_adapter.py).
+
+### Ownership and execution boundary
+
+| Component | Owns | Boundary |
+| --- | --- | --- |
+| Room (`prototype/src/model.ts`, `runtime.ts`) | Group membership and version, flat event stream, customer/group channels, thread roots, explicit `basisEventIds`, scoped memory | Authoritative source for chat state. Agents are peers; recipients and routes are metadata, not private Guard inboxes. |
+| Qwen bridge (`prototype/local_api.py`) | Agent invocation and local demo tool outcomes | Returns proposed actions to the Room. The browser stores the current prototype state; no real payment occurs. |
+| Guard (`guard/core.py`, `policy.py`, `tracer.py`) | Trust propagation, refund rule, violation tracing, observe/enforce sandbox behavior | Existing six-method Guard API remains usable by standalone `shop/` tests. It does not drive Room scheduling or mutate Room state. |
+| Room adapter (`guard/room_adapter.py`) | Deterministic offline projection of a Room snapshot into Guard events | Reuses the existing refund policy and tracer. No LLM or tool is called during review. |
+
+The live sequence is customer → Support (multi-turn and evidence registration) → Room case → Decision (policy review) → Room decision → Refund (simulated action and report). A configurable `AgentAdapter.describe()/invoke()` is the member interface; wake rules are versioned drafts in the prototype and are not yet an automatic scheduler. `GuardTestPort.review()` is a separate, offline port. Removing a member is a soft removal: existing events and scoped memories stay readable.
+
+### Room event interface (v1)
+
+`GroupState = {roomId, version, agents, routes, events, memories}`. `RoomEvent` is append-only and has `id`, increasing `sequence`, `groupVersion`, `actorId`, `kind`, `channel`, `body`, `createdAt`, optional `threadId`, explicit `basisEventIds`, and `recipients`. `threadId` references an earlier root event; the thread is a view over the same event stream. Every agent action must cite existing, visible source events; citations may cross threads. A memory has an independent `scopeId` (`room` or an agent ID), `sourceEventIds`, and `writeEventId`. Its write creates an ordinary Room event. The adapter maps memory keys to `<scopeId>:<memoryId>`; it never merges agent memories into one global slot.
+
+Tool executions need structured data in addition to human-readable `body`:
+
+```json
+{
+  "id": "evt_refund_1", "actorId": "refund", "kind": "tool", "channel": "group",
+  "basisEventIds": ["evt_decision_1", "evt_approval_1"],
+  "toolTrace": {
+    "name": "issue_refund",
+    "args": {"order_id": "1190", "amount": 500, "ticket_id": "MGR-1001"},
+    "result": {"status": "refunded", "order_id": "1190", "amount": 500, "simulated": true}
+  }
+}
+```
+
+`toolTrace` is optional for old Room events, but an unstructured `kind: "tool"` generates an **incomplete coverage finding**. Do not infer a refund from display text. A result from `check_approval` is trusted only when a **server-side test harness** passes that Room event ID in `trusted_tool_event_ids`; the browser HTTP endpoint never accepts such a list. A browser-authored approval claim therefore cannot satisfy the refund rule. Future approval-system integration must add a server-controlled, verifiable result source. File uploads currently record filenames only, so their contents are unverified.
+
+### Guard projection and review API
+
+`review_room(state, mode="observe", trusted_tool_event_ids=None)` returns `{status, findings, report, mode, guard_events}`. The `POST /api/guard/review` HTTP body is `{ "state": GroupState, "mode": "observe" | "enforce" }`; it always uses an empty trusted-tool set. `GET /api/health` checks the local API. The frontend's **运行离线 Guard** button calls the review endpoint. No Qwen key is needed for this check.
+
+The adapter validates event IDs, earlier basis and thread references, agent citations, and memory write links. For each Room event it calls Guard's `record_replay_event()` with `room_event_id`, `room_kind`, `room_sequence`, `group_version`, `thread_id`, and `channel`. It converts `basisEventIds` into Guard `derived_from` step indices. A structured tool Room event expands into `tool_call`, optional `policy_violation`, then `tool_result`; the Room ID maps to the result step so later citations follow the tool outcome. Customer events enter as untrusted. Guard still runs its original `refund_needs_verified_approval` policy and `check_run` tracer. The report adds `room_event_id` and `path_event_ids` so the UI can point back to chat items.
+
+`observe` reports what the recorded tool result says. `enforce` **simulates** blocking a violating call in the offline replay and reports `blocked`; it never reverses or prevents a Room action. `safe` means no recorded policy violation, **not** complete coverage: inspect `findings` for missing structured tool data or evidence. Neither mode executes a tool. The standalone `Guard.call_tool()` keeps its existing execution-time behavior for legacy tests.
+
+### Extension rules
+
+1. Add a member through `AgentDefinition` and implement `AgentAdapter.describe()/invoke(turn)`. Return `ProposedAction[]` with `actorId`, `kind`, `channel`, `body`, and exact `basisEventIds`; `threadId` and `recipients` are optional. The Room appends IDs, sequence, time, and current Group version.
+2. Put decisions, tool outcomes, and memory updates into Room events; retain a readable `body` for the group chat. Use `toolTrace` for policy-sensitive actions. Keep tool authority on the server or in a trusted test fixture, never in a model assertion or client-supplied trust flag.
+3. Add a Guard policy to the offline adapter's policy list and make its result traceable to Room event IDs. Keep tests for valid and invalid authority, missing citations, and observe/enforce outcomes. Policies should inspect structured arguments/results and event ancestry, not parse chat prose as authorization.
+4. Do not route live Room messages through `Guard.begin_turn()` or its global memory dictionary; this would discard Room thread structure and memory scopes. Use `shop/`'s Guard API separately for standalone scenario tests.
+
+### Verification and current limits
+
+From the repository root: `python -m unittest discover -s tests -p "test_*.py" -v`, `python -m evaluation.export_demo`, and `python -m evaluation.run_matrix --dry-run`. From `prototype/`: `python -m unittest discover -s tests -v`, `npm ci`, `npm run build`, and `npm run test:smoke`. The full `evaluation.run_matrix` still requires `shop.agents` and `shop.world`; this merge does not invent those missing modules. The local Room currently persists in browser `localStorage`, does not inspect uploaded file contents, and has no real payment or approval-system connector.
 
 ---
+
+## Historical standalone ShopCo team plan
+
+The numbered sections below preserve the original A1/A2/B1/B2 work split and standalone Guard demo contract. Follow the integration contract above for Room development; references below to a required `shop/` package, global memory, and Guard in every live agent call do not apply to the current Room prototype.
 
 ## Table of contents
 

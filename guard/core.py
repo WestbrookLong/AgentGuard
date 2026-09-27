@@ -58,6 +58,18 @@ class Guard:
     def _read_list(self, actor: str) -> list[int]:
         return list(self._reads.get(actor, []))
 
+    def record_replay_event(self, type: str, actor: str, derived_from: list[int],
+                            trust: Trust | None = None, **fields: Any) -> Event:
+        """Append an already executed event for offline adapters; never run a tool.
+
+        `derived_from` contains prior Guard steps. Live agents should keep using
+        ingest/send_message/memory_write/call_tool so policy checks occur there.
+        """
+        if any(not isinstance(step, int) or step < 0 or step >= len(self.events)
+               for step in derived_from):
+            raise ValueError("replay event must cite earlier Guard steps")
+        return self._log(type, actor, derived_from, trust=trust, **fields)
+
     def _received(self, actor: str, step: int) -> None:
         self._reads.setdefault(actor, []).append(step)
 

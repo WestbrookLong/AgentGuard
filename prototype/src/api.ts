@@ -1,4 +1,4 @@
-import type { GroupState, ProposedAction } from "./model";
+import type { GroupState, GuardReview, ProposedAction } from "./model";
 
 export interface APIConfig {
   provider: "qwen";
@@ -31,4 +31,5 @@ export const api = {
   testConnection: () => request<{ ok: boolean }>("/api/test-connection", {}),
   policy: () => request<{ policy_id: string; text: string }>("/api/policy"),
   invoke: (state: GroupState, agentId: string, triggerEventId: string) => request<{ actions: ProposedAction[]; model: string }>("/api/invoke", { state, agent_id: agentId, trigger_event_id: triggerEventId }),
+  reviewRoom: (state: GroupState, mode: "observe" | "enforce" = "observe") => request<GuardReview>("/api/guard/review", { state, mode }),
 };

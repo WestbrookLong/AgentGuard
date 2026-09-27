@@ -35,6 +35,18 @@ class FakeProvider:
 
 
 class LocalAPITests(unittest.TestCase):
+    def test_small_refund_has_structured_order_tool_trace(self):
+        provider = FakeProvider({"execute_refund": True, "amount": 45,
+                                 "report": "Simulated refund", "basis_event_ids": ["decision_1"]})
+        result = invoke_agent({"agent_id": "refund", "trigger_event_id": "decision_1", "state": state([
+            event("decision_1", "decision", "decision", json.dumps({"order_id": "1201", "approved": True, "amount": 45})),
+        ])}, provider)
+        tool = result["actions"][0]
+        self.assertEqual(tool["kind"], "tool")
+        self.assertEqual(tool["toolTrace"]["name"], "issue_refund")
+        self.assertEqual(tool["toolTrace"]["args"]["order_id"], "1201")
+        self.assertTrue(tool["toolTrace"]["result"]["simulated"])
+
     def test_key_does_not_appear_in_public_config(self):
         provider = QwenProvider()
         provider.configure("sk-test-secret", "test-model")

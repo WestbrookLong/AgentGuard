@@ -1,6 +1,6 @@
 # AgentGuard Group Prototype
 
-This is a local prototype of a flat agent collaboration room with an optional Python bridge to Alibaba Cloud Model Studio's Qwen API. It is separate from the existing `contract.py` and does not change the ShopCo team contract.
+This is a local prototype of a flat agent collaboration room with an optional Python bridge to Alibaba Cloud Model Studio's Qwen API. It shares the repository with the standalone Guard contract and connects to Guard through an offline Room snapshot adapter. The authoritative integration interface is in the [root README](../README.md#current-room--guard-integration-contract).
 
 ## Run
 
@@ -36,7 +36,7 @@ Official endpoint reference: https://help.aliyun.com/en/model-studio/compatibili
 - Use the customer test pane in either fixed-script mode or live Qwen mode. In live mode, Support handles customer turns; once it submits a case, Decision reviews the local demo policy and Refund produces a report. A low-value approved refund can only be added to the **simulated** ledger. No actual refund is performed.
 - File upload currently records **only the filename** in both modes. The model is explicitly told that the file contents have not been reviewed.
 - Switch between Room memory and each agent's independent memory. Add a candidate memory with a required source event; the memory write is also logged as an event. The graph and timeline components are imported directly from `../Memory System/src/components`.
-- Run a local structural check that verifies agent events cite existing source events. This is a placeholder for the teammate's offline AgentGuard test service, not a security verdict.
+- Run the offline Guard from the Room page. It checks event citations and structured tool results, applies the refund policy, and returns source paths in Room event IDs. Historical unstructured tool messages receive an incomplete coverage finding.
 - Keep draft data in browser `localStorage`; use the lower-left reset button to restore the seeded demo.
 
 ## Integration boundaries
@@ -47,4 +47,4 @@ Official endpoint reference: https://help.aliyun.com/en/model-studio/compatibili
 - `local_api.py`: loopback-only Python service; stores the key in memory, invokes Qwen through the OpenAI-compatible Chat endpoint in JSON mode, and checks event references before returning agent actions.
 - `policies/refund_policy.md`: versioned demo policy read by the Decision agent.
 
-The next implementation step is a persistent Group runtime, content-aware evidence handling, and a scheduler that actually executes the configurable wake rules. The offline Guard can consume a run snapshot through `GuardTestPort`; it is not in the live action path.
+The next implementation step is a persistent Group runtime, content-aware evidence handling, a server-controlled approval connector, and a scheduler that actually executes the configurable wake rules. The offline Guard consumes a Room snapshot through `GuardTestPort`; it is not in the live action path.

@@ -2,6 +2,14 @@ export type ActorId = "customer" | "human" | "system" | string;
 export type EventKind = "message" | "evidence" | "case" | "policy" | "decision" | "tool" | "report" | "memory";
 export type Channel = "group" | "customer";
 
+/** A recorded tool execution. The Room keeps this as one chat item; Guard
+ * expands it into a call and result when running an offline review. */
+export interface ToolTrace {
+  name: string;
+  args: Record<string, unknown>;
+  result: Record<string, unknown>;
+}
+
 export interface AgentDefinition {
   id: string;
   name: string;
@@ -25,6 +33,7 @@ export interface RoomEvent {
   threadId: string | null;
   basisEventIds: string[];
   recipients: string[];
+  toolTrace?: ToolTrace;
 }
 
 export interface MemoryRecord {
@@ -73,6 +82,7 @@ export interface ProposedAction {
   basisEventIds: string[];
   recipients?: string[];
   threadId?: string | null;
+  toolTrace?: ToolTrace;
 }
 
 export interface AgentTurn {
@@ -93,6 +103,8 @@ export interface AgentAdapter {
 export interface GuardReview {
   status: "pass" | "finding";
   findings: Array<{ eventId: string; reason: string }>;
+  mode?: "observe" | "enforce";
+  report?: { verdict: "safe" | "blocked" | "completed" | "incomplete"; violations: Array<{ room_event_id?: string; path_event_ids?: string[]; reason: string }> };
 }
 
 /** Offline test integration point. The live room does not consult this port. */

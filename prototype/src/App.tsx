@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowRight, BrainCircuit, CheckCircle2, ChevronRight, CircleHelp, FileUp, GitBranch, LayoutGrid, MessageCircle, MessageSquare, MoreHorizontal, Plus, RotateCcw, Send, Settings2, ShieldCheck, Sparkles, Users, X } from "lucide-react";
 import type { AgentDefinition, EventKind, GroupState, GuardReview, RoomEvent } from "./model";
-import { addAgent, addRoute, appendAction, loadState, remember, removeRoute, resetState, saveState, simulateCustomerMessage, simulateEvidence, structuralGuardPlaceholder, updateAgent } from "./runtime";
+import { addAgent, addRoute, appendAction, loadState, remember, removeRoute, resetState, saveState, simulateCustomerMessage, simulateEvidence, updateAgent } from "./runtime";
 import { MemoryView } from "./MemoryView";
 import { api, type APIConfig } from "./api";
 
@@ -90,6 +90,7 @@ export default function App() {
         const emitted: RoomEvent[] = [];
         for (const action of result.actions) {
           if (action.actorId !== agentId) throw new Error("Agent 响应的身份与请求不符");
+          if (action.kind === "report") action.basisEventIds = [...new Set([...action.basisEventIds, ...emitted.filter((item) => item.kind === "tool").map((item) => item.id)])];
           let event: RoomEvent;
           [working, event] = appendAction(working, action);
           emitted.push(event);
@@ -208,7 +209,7 @@ export default function App() {
             <section className="panel context-card"><div className="card-heading"><span>GROUP MEMBERS</span><button onClick={() => setPage("agents")}>管理 <ChevronRight size={12} /></button></div>{state.agents.map((agent) => <div key={agent.id} className="member-row"><span className="member-dot" style={{ background: agent.color }} /><div><strong>{agent.name}</strong><small>{agent.role}</small></div><span className={`status-dot ${agent.active ? "" : "inactive"}`} /></div>)}</section>
             <section className="panel context-card"><div className="card-heading"><span>ROOM MEMORY</span><button onClick={() => setPage("memory")}>查看 <ChevronRight size={12} /></button></div><div className="memory-count"><BrainCircuit size={20} /><strong>{roomMemoryCount}</strong><span>条共享记忆</span></div><p>每个 agent 的独立记忆在「记忆图景」中切换查看。</p></section>
             <section className="panel context-card"><div className="card-heading"><span>RECENT ACTIVITY</span><Activity size={15} /></div>{activity.length ? activity.map((event) => <button key={event.id} className="activity-row" onClick={() => navigateToEvent(event.id)}><span className="activity-mark" /><span><strong>{kindLabel[event.kind]}</strong><small>{event.actorId} · #{event.sequence}</small></span></button>) : <p className="muted">等待测试运行</p>}</section>
-            <section className="panel context-card guard-card"><div className="card-heading"><span>OFFLINE GUARD</span><ShieldCheck size={16} /></div><p>占位结构检查：验证 agent 动作是否引用了具体来源事件。真实策略测试由同事的 Guard 接入。</p><button className="outline-button" onClick={() => void structuralGuardPlaceholder.review(state).then(setGuardReview)}>运行结构检查</button>{guardReview && <div className={`review-result ${guardReview.status}`}><CheckCircle2 size={15} />{guardReview.status === "pass" ? "来源引用结构通过" : `${guardReview.findings.length} 条结构问题`}</div>}</section>
+            <section className="panel context-card guard-card"><div className="card-heading"><span>OFFLINE GUARD</span><ShieldCheck size={16} /></div><p>对当前 Room 快照运行来源追踪与退款策略检查。测试不会改写聊天或执行工具。</p><button className="outline-button" onClick={() => void api.reviewRoom(state).then(setGuardReview).catch((error) => setNotice(error instanceof Error ? error.message : String(error)))}>运行离线 Guard</button>{guardReview && <div className={`review-result ${guardReview.status}`}><CheckCircle2 size={15} />{guardReview.report?.verdict || guardReview.status} · {guardReview.findings.length} 条发现{guardReview.findings.slice(0, 3).map((finding, index) => <p key={`${finding.eventId}-${index}`}>{finding.eventId ? `${finding.eventId}: ` : ""}{finding.reason}</p>)}</div>}</section>
             {latestReport && <section className="panel context-card"><div className="card-heading"><span>LATEST REPORT</span><MoreHorizontal size={16} /></div><p>{latestReport.body}</p><button className="text-link" onClick={() => navigateToEvent(latestReport.id)}>查看报告事件 <ArrowRight size={13} /></button></section>}
           </aside>
         </div>

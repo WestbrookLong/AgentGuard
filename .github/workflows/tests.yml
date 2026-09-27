@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - integration/main-readiness
+      - West-platform
   pull_request:
     branches:
       - main
@@ -30,6 +31,27 @@ jobs:
 
       - name: Run standalone B1 tests
         run: python -c "import runpy; runpy.run_path('tests/test_b1.py', run_name='__main__')"
+
+      - name: Test Qwen bridge and Room API
+        working-directory: prototype
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: prototype/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: prototype
+        run: npm ci
+
+      - name: Build and smoke test Room
+        working-directory: prototype
+        run: |
+          npm run build
+          npm run test:smoke
 
       - name: Run scripted security demo
         run: python -m evaluation.export_demo
