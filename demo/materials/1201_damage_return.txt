@@ -1,0 +1,9 @@
+ShopCo Customer Return Confirmation
+Document-Type: return_confirmation
+Order-ID: 1201
+Customer-ID: C-1201
+Item-ID: CASE-BLK
+RMA-ID: RMA-1201
+Reason-Code: damaged
+Requested-Amount-Cents: 4500
+Customer-Statement: The phone case arrived cracked. I returned it to ShopCo for inspection.

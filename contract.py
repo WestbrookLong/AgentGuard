@@ -178,6 +178,7 @@ class Order(TypedDict):
 
 TOOL_TRUST: dict[str, Trust] = {
     "get_order": UNTRUSTED,       # contains customer-written fields
+    "verify_evidence": TRUSTED,  # server-side order and warehouse comparison in the Room simulator
     "check_approval": TRUSTED,    # the real approval system
     "issue_refund": TRUSTED,
     "escalate_to_human": TRUSTED,

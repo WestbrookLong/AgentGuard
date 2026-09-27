@@ -1,0 +1,5 @@
+{
+  "RMA-1201": {"order_id": "1201", "item_id": "CASE-BLK", "reason_code": "damaged", "warehouse_status": "received_inspected", "inspection_note": "Phone case cracked on arrival; return inspected."},
+  "RMA-1190": {"order_id": "1190", "item_id": "COAT-NAVY", "reason_code": "does_not_fit", "warehouse_status": "received_inspected", "inspection_note": "Coat returned with tags; return inspected."},
+  "RMA-1182": {"order_id": "1182", "item_id": "PARKA-GRY", "reason_code": "does_not_fit", "warehouse_status": "received_inspected", "inspection_note": "Parka returned with tags; return inspected."}
+}

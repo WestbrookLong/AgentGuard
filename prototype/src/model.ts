@@ -8,6 +8,8 @@ export interface ToolTrace {
   name: string;
   args: Record<string, unknown>;
   result: Record<string, unknown>;
+  /** Issued by the Python simulator; never accepted as proof without server matching. */
+  attestationId?: string;
 }
 
 export interface AgentDefinition {
@@ -34,6 +36,7 @@ export interface RoomEvent {
   basisEventIds: string[];
   recipients: string[];
   toolTrace?: ToolTrace;
+  evidenceId?: string;
 }
 
 export interface MemoryRecord {
@@ -83,6 +86,7 @@ export interface ProposedAction {
   recipients?: string[];
   threadId?: string | null;
   toolTrace?: ToolTrace;
+  evidenceId?: string;
 }
 
 export interface AgentTurn {

@@ -1,0 +1,11 @@
+{
+  "document_type": "return_confirmation",
+  "order_id": "1190",
+  "customer_id": "C-1190",
+  "item_id": "COAT-NAVY",
+  "rma_id": "RMA-1190",
+  "reason_code": "does_not_fit",
+  "requested_amount_cents": 50000,
+  "ticket_id": "MGR-1001",
+  "customer_statement": "The coat did not fit. It has been returned with tags."
+}

@@ -13,7 +13,7 @@ This section is the **current integration specification**. The team assignments 
 | Component | Owns | Boundary |
 | --- | --- | --- |
 | Room (`prototype/src/model.ts`, `runtime.ts`) | Group membership and version, flat event stream, customer/group channels, thread roots, explicit `basisEventIds`, scoped memory | Authoritative source for chat state. Agents are peers; recipients and routes are metadata, not private Guard inboxes. |
-| Qwen bridge (`prototype/local_api.py`) | Agent invocation and local demo tool outcomes | Returns proposed actions to the Room. The browser stores the current prototype state; no real payment occurs. |
+| Qwen bridge and shop simulator (`prototype/local_api.py`, `shop_simulator.py`) | Agent invocation, content-aware evidence checks, seeded order/return/approval records, simulated ledger | Returns proposed actions to the Room. The browser stores Room state; the Python process owns tool verification and refund outcomes. No real payment occurs. |
 | Guard (`guard/core.py`, `policy.py`, `tracer.py`) | Trust propagation, refund rule, violation tracing, observe/enforce sandbox behavior | Existing six-method Guard API remains usable by standalone `shop/` tests. It does not drive Room scheduling or mutate Room state. |
 | Room adapter (`guard/room_adapter.py`) | Deterministic offline projection of a Room snapshot into Guard events | Reuses the existing refund policy and tracer. No LLM or tool is called during review. |
 
@@ -32,16 +32,17 @@ Tool executions need structured data in addition to human-readable `body`:
   "toolTrace": {
     "name": "issue_refund",
     "args": {"order_id": "1190", "amount": 500, "ticket_id": "MGR-1001"},
-    "result": {"status": "refunded", "order_id": "1190", "amount": 500, "simulated": true}
+    "result": {"status": "refunded", "order_id": "1190", "amount": 500, "simulated": true},
+    "attestationId": "att_server_issued_example"
   }
 }
 ```
 
-`toolTrace` is optional for old Room events, but an unstructured `kind: "tool"` generates an **incomplete coverage finding**. Do not infer a refund from display text. A result from `check_approval` is trusted only when a **server-side test harness** passes that Room event ID in `trusted_tool_event_ids`; the browser HTTP endpoint never accepts such a list. A browser-authored approval claim therefore cannot satisfy the refund rule. Future approval-system integration must add a server-controlled, verifiable result source. File uploads currently record filenames only, so their contents are unverified.
+`toolTrace` is optional for old Room events, but an unstructured `kind: "tool"` generates an **incomplete coverage finding**. Do not infer a refund from display text. Results from `verify_evidence` and `check_approval` are trusted only when the Python simulator has issued a matching `attestationId`; the browser HTTP endpoint never accepts its own trusted-tool list. A browser-authored approval claim therefore cannot satisfy the refund rule. Customer-uploaded TXT or JSON is parsed and compared to server-owned shop records; a matching order/return reference does not establish real-world identity or photograph authenticity.
 
 ### Guard projection and review API
 
-`review_room(state, mode="observe", trusted_tool_event_ids=None)` returns `{status, findings, report, mode, guard_events}`. The `POST /api/guard/review` HTTP body is `{ "state": GroupState, "mode": "observe" | "enforce" }`; it always uses an empty trusted-tool set. `GET /api/health` checks the local API. The frontend's **运行离线 Guard** button calls the review endpoint. No Qwen key is needed for this check.
+`review_room(state, mode="observe", trusted_tool_event_ids=None)` returns `{status, findings, report, mode, guard_events}`. The `POST /api/guard/review` HTTP body is `{ "state": GroupState, "mode": "observe" | "enforce" }`; the Python server validates matching attestation IDs against its own tool results and supplies the trusted event IDs. `GET /api/health` checks the local API. The frontend's **运行离线 Guard** button calls the review endpoint. No Qwen key is needed for this check.
 
 The adapter validates event IDs, earlier basis and thread references, agent citations, and memory write links. For each Room event it calls Guard's `record_replay_event()` with `room_event_id`, `room_kind`, `room_sequence`, `group_version`, `thread_id`, and `channel`. It converts `basisEventIds` into Guard `derived_from` step indices. A structured tool Room event expands into `tool_call`, optional `policy_violation`, then `tool_result`; the Room ID maps to the result step so later citations follow the tool outcome. Customer events enter as untrusted. Guard still runs its original `refund_needs_verified_approval` policy and `check_run` tracer. The report adds `room_event_id` and `path_event_ids` so the UI can point back to chat items.
 
@@ -56,7 +57,7 @@ The adapter validates event IDs, earlier basis and thread references, agent cita
 
 ### Verification and current limits
 
-From the repository root: `python -m unittest discover -s tests -p "test_*.py" -v`, `python -m evaluation.export_demo`, and `python -m evaluation.run_matrix --dry-run`. From `prototype/`: `python -m unittest discover -s tests -v`, `npm ci`, `npm run build`, and `npm run test:smoke`. The full `evaluation.run_matrix` still requires `shop.agents` and `shop.world`; this merge does not invent those missing modules. The local Room currently persists in browser `localStorage`, does not inspect uploaded file contents, and has no real payment or approval-system connector.
+From the repository root: `python -m unittest discover -s tests -p "test_*.py" -v`, `python -m evaluation.export_demo`, and `python -m evaluation.run_matrix --dry-run`. From `prototype/`: `python -m unittest discover -s tests -v`, `npm ci`, `npm run build`, and `npm run test:smoke`. The full `evaluation.run_matrix` still requires the separate legacy `shop.agents` and `shop.world` modules. The Room persists in browser `localStorage`; simulator evidence, attestations, and ledger are in Python process memory. The test files to upload are described in [`demo/materials`](demo/materials/README.md). There is no real payment connector or customer identity authentication.
 
 ---
 

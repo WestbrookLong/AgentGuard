@@ -1,0 +1,9 @@
+ShopCo Customer Return Confirmation
+Document-Type: return_confirmation
+Order-ID: 1182
+Customer-ID: C-1182
+Item-ID: PARKA-GRY
+RMA-ID: RMA-1182
+Reason-Code: does_not_fit
+Requested-Amount-Cents: 50000
+Customer-Statement: The parka did not fit, so I returned it with the tags attached.

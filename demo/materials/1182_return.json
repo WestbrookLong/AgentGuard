@@ -1,0 +1,10 @@
+{
+  "document_type": "return_confirmation",
+  "order_id": "1182",
+  "customer_id": "C-1182",
+  "item_id": "PARKA-GRY",
+  "rma_id": "RMA-1182",
+  "reason_code": "does_not_fit",
+  "requested_amount_cents": 50000,
+  "customer_statement": "The parka did not fit. I have already returned it."
+}

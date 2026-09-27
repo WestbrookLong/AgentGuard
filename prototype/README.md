@@ -21,6 +21,8 @@ npm run dev
 
 Open `http://127.0.0.1:5173/`, choose **Qwen API 配置**, enter your Model Studio key, set the Base URL for the same region, and save. Then switch the customer test window to **Qwen 实时调用**. Each agent may override the default model ID in its member configuration. The default is `qwen-plus`.
 
+To run a complete refund, follow the messages and upload the prepared TXT files in [`demo/materials`](../demo/materials/README.md). The files are deliberately outside the frontend; you choose and upload them yourself. The server compares their fields with its own order, warehouse return, and approval records. The lower-left reset button clears both the browser Room and the in-memory simulator, so each scenario can be run again.
+
 The key stays in the Python process memory and is not returned by `/api/config`, written to disk, or stored in browser `localStorage`. Restarting `local_api.py` clears the key. You may also set `DASHSCOPE_API_KEY` in the Python process environment before starting the server. Do not put a key in the Group member description, chat, or repository files.
 
 The default Base URL is the legacy Beijing endpoint, `https://dashscope.aliyuncs.com/compatible-mode/v1`. Model Studio now recommends a workspace-specific endpoint; copy its full Base URL from your workspace if available. Singapore and other regional keys need their matching regional endpoint. The local bridge accepts only HTTPS Alibaba Cloud URLs ending in `/compatible-mode/v1`.
@@ -32,19 +34,20 @@ Official endpoint reference: https://help.aliyun.com/en/model-studio/compatibili
 ## What works
 
 - Add, edit, remove, and rejoin Group members; add and remove draft wake rules. Removal is a soft removal so historical events and memory remain readable. Configuration changes increment the Group version; each event records its version. The deterministic demo fixture does not yet execute those draft wake rules.
-- Read and post in the Room's main stream; open and reply in threads.
-- Use the customer test pane in either fixed-script mode or live Qwen mode. In live mode, Support handles customer turns; once it submits a case, Decision reviews the local demo policy and Refund produces a report. A low-value approved refund can only be added to the **simulated** ledger. No actual refund is performed.
-- File upload currently records **only the filename** in both modes. The model is explicitly told that the file contents have not been reviewed.
+- Read and post in the Room's main stream; open a thread, choose an active member, and receive its reply. Fixed-script mode labels its reply as simulated; Qwen mode invokes the selected member.
+- Use the customer test pane in fixed-script mode for UI smoke checks or Qwen mode for the evidence-aware refund flow. Support handles customer turns and server-side evidence checks; Decision reviews the policy and approval registry; Refund writes only to the simulated ledger and produces a report. The Room sidebar displays the server ledger independently of the Agent report. No actual refund is performed.
+- Upload TXT or JSON customer evidence through `/api/evidence/upload` in Qwen mode. The server reads the content, limits it to 32 KB, hashes it, and compares its fields to the shop records. Uploaded approval notices remain customer claims.
 - Switch between Room memory and each agent's independent memory. Add a candidate memory with a required source event; the memory write is also logged as an event. The graph and timeline components are imported directly from `../Memory System/src/components`.
 - Run the offline Guard from the Room page. It checks event citations and structured tool results, applies the refund policy, and returns source paths in Room event IDs. Historical unstructured tool messages receive an incomplete coverage finding.
-- Keep draft data in browser `localStorage`; use the lower-left reset button to restore the seeded demo.
+- Keep Room draft data in browser `localStorage`. The shop simulator keeps evidence, attestations, and ledger entries in Python process memory; restarting the service requires re-uploading evidence. The reset button clears both sides.
 
 ## Integration boundaries
 
 - `src/model.ts`: `AgentAdapter.describe/invoke`, `AgentTurn`, `ProposedAction`, event and memory shapes, natural language `GroupGenerator` draft interface, and the offline `GuardTestPort`.
 - `src/runtime.ts`: local event log, member configuration, provenance validation, and deterministic demo fixtures.
 - `src/MemoryView.tsx`: an adapter from scoped memory records to the existing `MemoryGraph` and `MemoryTimeline` visualization contracts.
-- `local_api.py`: loopback-only Python service; stores the key in memory, invokes Qwen through the OpenAI-compatible Chat endpoint in JSON mode, and checks event references before returning agent actions.
+- `local_api.py`: loopback-only Python service; stores the key in memory, invokes Qwen through the OpenAI-compatible Chat endpoint in JSON mode, and checks event references before returning agent actions. It exposes upload and reset endpoints.
+- `shop_simulator.py` and `simdata/`: server-owned orders, returns, approvals, evidence verification, attested tool results, and an in-memory simulated refund ledger.
 - `policies/refund_policy.md`: versioned demo policy read by the Decision agent.
 
-The next implementation step is a persistent Group runtime, content-aware evidence handling, a server-controlled approval connector, and a scheduler that actually executes the configurable wake rules. The offline Guard consumes a Room snapshot through `GuardTestPort`; it is not in the live action path.
+The next implementation step is a persistent Group runtime and a scheduler that executes configurable wake rules. The local shop records are deterministic fixtures rather than a real commerce or identity provider. The offline Guard consumes a Room snapshot through `GuardTestPort`; it is not in the live action path.

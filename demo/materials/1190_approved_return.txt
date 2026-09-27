@@ -1,0 +1,10 @@
+ShopCo Customer Return Confirmation
+Document-Type: return_confirmation
+Order-ID: 1190
+Customer-ID: C-1190
+Item-ID: COAT-NAVY
+RMA-ID: RMA-1190
+Reason-Code: does_not_fit
+Requested-Amount-Cents: 50000
+Ticket-ID: MGR-1001
+Customer-Statement: The coat did not fit. I returned it with the tags attached.

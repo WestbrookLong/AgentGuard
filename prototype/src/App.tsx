@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowRight, BrainCircuit, CheckCircle2, ChevronRight, CircleHelp, FileUp, GitBranch, LayoutGrid, MessageCircle, MessageSquare, MoreHorizontal, Plus, RotateCcw, Send, Settings2, ShieldCheck, Sparkles, Users, X } from "lucide-react";
 import type { AgentDefinition, EventKind, GroupState, GuardReview, RoomEvent } from "./model";
-import { addAgent, addRoute, appendAction, loadState, remember, removeRoute, resetState, saveState, simulateCustomerMessage, simulateEvidence, updateAgent } from "./runtime";
+import { addAgent, addRoute, appendAction, loadState, remember, removeRoute, resetState, saveState, simulateCustomerMessage, updateAgent } from "./runtime";
 import { MemoryView } from "./MemoryView";
 import { api, type APIConfig } from "./api";
 
@@ -38,6 +38,7 @@ export default function App() {
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [groupDraft, setGroupDraft] = useState("");
   const [threadDraft, setThreadDraft] = useState("");
+  const [threadAgentId, setThreadAgentId] = useState("support");
   const [customerDraft, setCustomerDraft] = useState("");
   const [showAgentForm, setShowAgentForm] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
@@ -55,11 +56,13 @@ export default function App() {
   const [routeKind, setRouteKind] = useState<EventKind>("message");
   const [routeAgent, setRouteAgent] = useState("support");
   const [guardReview, setGuardReview] = useState<GuardReview | null>(null);
+  const [simLedger, setSimLedger] = useState<Array<{ refund_id: string; order_id: string; amount: number; currency: string }>>([]);
   const [notice, setNotice] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => saveState(state), [state]);
   useEffect(() => { void api.config().then((config) => { setApiConfig(config); setDefaultModelDraft(config.default_model); setBaseUrlDraft(config.base_url); }).catch(() => setApiConfig(null)); }, []);
+  useEffect(() => { void api.ledger().then((result) => setSimLedger(result.refunds)).catch(() => undefined); }, []);
   useEffect(() => { if (notice) { const timer = setTimeout(() => setNotice(""), 4500); return () => clearTimeout(timer); } }, [notice]);
 
   const groupEvents = state.events.filter((event) => event.channel === "group" && !event.threadId);
@@ -73,13 +76,42 @@ export default function App() {
 
   function attempt(action: () => void) { try { action(); } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); } }
 
+  async function resetDemo() {
+    let serverReset = true;
+    try { await api.resetSimulation(); }
+    catch { serverReset = false; }
+    setState(resetState()); setThreadRootId(null); setGuardReview(null); setSimLedger([]);
+    setNotice(serverReset ? "Room 与模拟账本已重置" : "Room 已重置；本地 Python 服务未响应，模拟账本可能仍有记录");
+  }
+
   function postGroup() {
     const body = groupDraft.trim(); if (!body) return;
     attempt(() => { setState((current) => appendAction(current, { actorId: "human", kind: "message", channel: "group", body, basisEventIds: [] })[0]); setGroupDraft(""); });
   }
-  function postThread() {
-    const body = threadDraft.trim(); if (!body || !threadRootId) return;
-    attempt(() => { setState((current) => appendAction(current, { actorId: "human", kind: "message", channel: "group", body, basisEventIds: [threadRootId], threadId: threadRootId })[0]); setThreadDraft(""); });
+  async function postThread() {
+    const body = threadDraft.trim(); if (!body || !threadRootId || busy) return;
+    if (liveMode && !apiConfig?.configured) { setNotice("请先配置 Qwen API Key，才能让 Agent 回复 thread"); return; }
+    let working: GroupState;
+    let humanEvent: RoomEvent;
+    [working, humanEvent] = appendAction(state, { actorId: "human", kind: "message", channel: "group", body, basisEventIds: [threadRootId], threadId: threadRootId, recipients: [threadAgentId] });
+    setState(working); setThreadDraft("");
+    if (!working.agents.find((agent) => agent.id === threadAgentId)?.active) { setNotice("目标 Agent 已移出 Group"); return; }
+    setBusy(true);
+    try {
+      if (liveMode) {
+        const result = await api.invoke(working, threadAgentId, humanEvent.id, threadRootId);
+        for (const action of result.actions) {
+          if (action.actorId !== threadAgentId || action.threadId !== threadRootId) throw new Error("Agent thread 回复格式不正确");
+          [working] = appendAction(working, action);
+        }
+      } else {
+        [working] = appendAction(working, { actorId: threadAgentId, kind: "message", channel: "group",
+          body: "[固定脚本模拟回复] 已收到你的问题。要让 Agent 根据上传凭证作实际判断，请切换 Qwen 实时调用。",
+          basisEventIds: [humanEvent.id], threadId: threadRootId, recipients: ["human"] });
+      }
+      setState(working);
+    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); }
   }
   async function runLive(initial: GroupState, triggerId: string) {
     setBusy(true);
@@ -90,7 +122,7 @@ export default function App() {
         const emitted: RoomEvent[] = [];
         for (const action of result.actions) {
           if (action.actorId !== agentId) throw new Error("Agent 响应的身份与请求不符");
-          if (action.kind === "report") action.basisEventIds = [...new Set([...action.basisEventIds, ...emitted.filter((item) => item.kind === "tool").map((item) => item.id)])];
+          if (["case", "decision", "report"].includes(action.kind)) action.basisEventIds = [...new Set([...action.basisEventIds, ...emitted.filter((item) => item.kind === "tool").map((item) => item.id)])];
           let event: RoomEvent;
           [working, event] = appendAction(working, action);
           emitted.push(event);
@@ -116,8 +148,11 @@ export default function App() {
       const report = refundEvents.find((event) => event.kind === "report");
       if (report) {
         working = remember(working, "refund", report.body, [report.id], "refund");
+        [working] = appendAction(working, { actorId: "support", kind: "message", channel: "customer",
+          body: report.body, basisEventIds: [report.id], recipients: ["customer"] });
         setState(working);
       }
+      void api.ledger().then((result) => setSimLedger(result.refunds)).catch(() => undefined);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
@@ -136,11 +171,17 @@ export default function App() {
   async function uploadEvidence(file: File | undefined) {
     if (!file || busy) return;
     if (fileRef.current) fileRef.current.value = "";
-    if (!liveMode) { attempt(() => setState((current) => simulateEvidence(current, file.name))); return; }
-    if (!apiConfig?.configured) { setNotice("请先在 API 配置中输入 Qwen API Key"); return; }
-    const [next, event] = appendAction(state, { actorId: "customer", kind: "evidence", channel: "customer", body: `已上传证据：${file.name}（文件内容尚未读取）`, basisEventIds: [] });
-    setState(next);
-    await runLive(next, event.id);
+    if (!liveMode || !apiConfig?.configured) { setNotice("请切换 Qwen 实时调用并配置 API Key，再上传模拟凭证"); return; }
+    setBusy(true);
+    try {
+      const uploaded = await api.uploadEvidence(file.name, await file.text());
+      const [next, event] = appendAction(state, { actorId: "customer", kind: "evidence", channel: "customer",
+        body: `已上传 ${uploaded.filename}；客户声明：${JSON.stringify(uploaded.claims)}；服务端核验：${uploaded.verification.reason}`,
+        evidenceId: uploaded.evidence_id, basisEventIds: [] });
+      setState(next);
+      await runLive(next, event.id);
+    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); }
   }
   function openAgentForm(agent?: AgentDefinition) {
     setEditingAgentId(agent?.id || null); setAgentName(agent?.name || ""); setAgentDescription(agent?.description || ""); setAgentTools(agent?.tools.join(", ") || ""); setAgentModel(agent?.model || ""); setShowAgentForm(true);
@@ -182,7 +223,7 @@ export default function App() {
         <button className={page === "agents" ? "active" : ""} onClick={() => setPage("agents")} title="Agent 成员"><Users size={21} /></button>
         <button className={page === "memory" ? "active" : ""} onClick={() => setPage("memory")} title="记忆图景"><BrainCircuit size={21} /></button>
       </nav>
-      <div className="rail-bottom"><button title="Qwen API 配置" onClick={() => setApiOpen(true)}><Settings2 size={19} /></button><button title="重置本地演示" onClick={() => { setState(resetState()); setThreadRootId(null); setGuardReview(null); setNotice("演示已重置"); }}><RotateCcw size={19} /></button></div>
+      <div className="rail-bottom"><button title="Qwen API 配置" onClick={() => setApiOpen(true)}><Settings2 size={19} /></button><button title="重置本地演示" onClick={() => void resetDemo()}><RotateCcw size={19} /></button></div>
     </aside>
 
     <div className="main-shell">
@@ -200,9 +241,9 @@ export default function App() {
           <section className="customer-panel panel">
             <div className="panel-header"><div className="panel-title"><MessageCircle size={18} /><div><strong>客户测试窗口</strong><small>模拟真实客服的多轮对话</small></div></div><span className="sandbox-badge">SANDBOX</span></div>
             <div className="mode-switch"><button className={!liveMode ? "selected" : ""} disabled={busy} onClick={() => setLiveMode(false)}>固定脚本</button><button className={liveMode ? "selected" : ""} disabled={busy} onClick={() => setLiveMode(true)}>Qwen 实时调用</button>{busy && <span>Agent 正在处理…</span>}</div>
-            <div className="customer-feed">{customerEvents.length === 0 ? <div className="empty-customer"><Sparkles size={27} /><strong>开始一次退款对话</strong><p>发送“我想为订单 #1182 申请退款”，再上传证据文件，观察三个 agent 如何协作。</p></div> : customerEvents.map((event) => <div key={event.id} id={`event-${event.id}`} className={`customer-bubble ${event.actorId === "customer" ? "from-customer" : "from-support"} ${selectedEventId === event.id ? "focused" : ""}`}><small>{event.actorId === "customer" ? "客户" : "Support"} · {time(event.createdAt)} · #{event.sequence}</small><p>{event.body}</p></div>)}</div>
-            <div className="customer-composer"><input ref={fileRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.txt" hidden onChange={(event) => void uploadEvidence(event.target.files?.[0])} /><button className="attach-button" title="上传证据元数据" disabled={busy} onClick={() => fileRef.current?.click()}><FileUp size={18} /></button><input value={customerDraft} disabled={busy} placeholder="以客户身份发送消息…" onChange={(event) => setCustomerDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void postCustomer(); }} /><button onClick={() => void postCustomer()} disabled={busy || !customerDraft.trim()}><ArrowRight size={17} /></button></div>
-            <div className="customer-note"><CircleHelp size={13} />{liveMode ? "由本地 Python 服务调用 Qwen；上传只记录文件名，不读取文件内容。" : "演示使用固定脚本；上传只记录文件名，不读取文件内容。"}</div>
+            <div className="customer-feed">{customerEvents.length === 0 ? <div className="empty-customer"><Sparkles size={27} /><strong>开始一次退款对话</strong><p>例如发送“我想为订单 #1201 申请退款”，再上传 demo/materials 中的 TXT 凭证。</p></div> : customerEvents.map((event) => <div key={event.id} id={`event-${event.id}`} className={`customer-bubble ${event.actorId === "customer" ? "from-customer" : "from-support"} ${selectedEventId === event.id ? "focused" : ""}`}><small>{event.actorId === "customer" ? "客户" : "Support"} · {time(event.createdAt)} · #{event.sequence}</small><p>{event.body}</p></div>)}</div>
+            <div className="customer-composer"><input ref={fileRef} type="file" accept=".txt,.json,text/plain,application/json" hidden onChange={(event) => void uploadEvidence(event.target.files?.[0])} /><button className="attach-button" title="上传并核验 TXT 或 JSON 模拟凭证" disabled={busy} onClick={() => fileRef.current?.click()}><FileUp size={18} /></button><input value={customerDraft} disabled={busy} placeholder="以客户身份发送消息…" onChange={(event) => setCustomerDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void postCustomer(); }} /><button onClick={() => void postCustomer()} disabled={busy || !customerDraft.trim()}><ArrowRight size={17} /></button></div>
+            <div className="customer-note"><CircleHelp size={13} />{liveMode ? "上传 TXT 或 JSON 凭证后，服务端会核对订单、退货和审批记录。" : "固定脚本只演示界面；真实凭证流程请切换 Qwen 实时调用。"}</div>
           </section>
 
           <aside className="context-panel">
@@ -210,6 +251,7 @@ export default function App() {
             <section className="panel context-card"><div className="card-heading"><span>ROOM MEMORY</span><button onClick={() => setPage("memory")}>查看 <ChevronRight size={12} /></button></div><div className="memory-count"><BrainCircuit size={20} /><strong>{roomMemoryCount}</strong><span>条共享记忆</span></div><p>每个 agent 的独立记忆在「记忆图景」中切换查看。</p></section>
             <section className="panel context-card"><div className="card-heading"><span>RECENT ACTIVITY</span><Activity size={15} /></div>{activity.length ? activity.map((event) => <button key={event.id} className="activity-row" onClick={() => navigateToEvent(event.id)}><span className="activity-mark" /><span><strong>{kindLabel[event.kind]}</strong><small>{event.actorId} · #{event.sequence}</small></span></button>) : <p className="muted">等待测试运行</p>}</section>
             <section className="panel context-card guard-card"><div className="card-heading"><span>OFFLINE GUARD</span><ShieldCheck size={16} /></div><p>对当前 Room 快照运行来源追踪与退款策略检查。测试不会改写聊天或执行工具。</p><button className="outline-button" onClick={() => void api.reviewRoom(state).then(setGuardReview).catch((error) => setNotice(error instanceof Error ? error.message : String(error)))}>运行离线 Guard</button>{guardReview && <div className={`review-result ${guardReview.status}`}><CheckCircle2 size={15} />{guardReview.report?.verdict || guardReview.status} · {guardReview.findings.length} 条发现{guardReview.findings.slice(0, 3).map((finding, index) => <p key={`${finding.eventId}-${index}`}>{finding.eventId ? `${finding.eventId}: ` : ""}{finding.reason}</p>)}</div>}</section>
+            <section className="panel context-card"><div className="card-heading"><span>SIMULATED LEDGER</span><button onClick={() => void api.ledger().then((result) => setSimLedger(result.refunds)).catch((error) => setNotice(String(error)))}>刷新</button></div>{simLedger.length ? simLedger.map((refund) => <p key={refund.refund_id}>#{refund.order_id} · {refund.currency} {refund.amount.toFixed(2)} · {refund.refund_id}</p>) : <p>模拟账本暂无退款</p>}</section>
             {latestReport && <section className="panel context-card"><div className="card-heading"><span>LATEST REPORT</span><MoreHorizontal size={16} /></div><p>{latestReport.body}</p><button className="text-link" onClick={() => navigateToEvent(latestReport.id)}>查看报告事件 <ArrowRight size={13} /></button></section>}
           </aside>
         </div>
@@ -220,7 +262,7 @@ export default function App() {
       {page === "memory" && <MemoryView state={state} onRemember={(scopeId, text, sources) => attempt(() => setState((current) => remember(current, scopeId, text, sources)))} onEventSelect={navigateToEvent} />}
     </div>
 
-    {threadRoot && page === "room" && <div className="thread-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setThreadRootId(null); }}><aside className="thread-panel"><div className="thread-header"><div><span className="eyebrow">THREAD</span><h2>围绕一条消息继续讨论</h2></div><button className="icon-button" onClick={() => setThreadRootId(null)}><X size={19} /></button></div><div className="thread-feed"><EventCard event={threadRoot} state={state} selected={selectedEventId === threadRoot.id} />{threadEvents.map((event) => <EventCard key={event.id} event={event} state={state} selected={selectedEventId === event.id} />)}</div><div className="composer"><textarea rows={3} value={threadDraft} placeholder="回复这个 thread…" onChange={(event) => setThreadDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); postThread(); } }} /><div><span>回复会引用 thread 根事件</span><button onClick={postThread} disabled={!threadDraft.trim()}><Send size={15} />回复</button></div></div></aside></div>}
+    {threadRoot && page === "room" && <div className="thread-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setThreadRootId(null); }}><aside className="thread-panel"><div className="thread-header"><div><span className="eyebrow">THREAD</span><h2>围绕一条消息继续讨论</h2></div><button className="icon-button" onClick={() => setThreadRootId(null)}><X size={19} /></button></div><div className="thread-feed"><EventCard event={threadRoot} state={state} selected={selectedEventId === threadRoot.id} />{threadEvents.map((event) => <EventCard key={event.id} event={event} state={state} selected={selectedEventId === event.id} />)}</div><div className="composer"><textarea rows={3} value={threadDraft} placeholder="回复这个 thread…" onChange={(event) => setThreadDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void postThread(); } }} /><div><span>请 <select value={threadAgentId} onChange={(event) => setThreadAgentId(event.target.value)}>{state.agents.filter((agent) => agent.active).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select> 回复</span><button onClick={() => void postThread()} disabled={busy || !threadDraft.trim()}><Send size={15} />回复</button></div></div></aside></div>}
 
     {showAgentForm && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAgentForm(false); }}><div className="agent-modal panel"><div className="modal-head"><div><span className="eyebrow">AGENT MANIFEST</span><h2>{editingAgentId ? "编辑 agent" : "添加 agent"}</h2></div><button className="icon-button" onClick={() => setShowAgentForm(false)}><X size={19} /></button></div><label>名称<input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="例如 Evidence Reviewer" /></label><label>职责描述<textarea value={agentDescription} onChange={(event) => setAgentDescription(event.target.value)} rows={4} placeholder="描述这个 agent 负责什么、何时行动…" /></label><label>所需工具（逗号分隔）<input value={agentTools} onChange={(event) => setAgentTools(event.target.value)} placeholder="get_order, search_policy" /></label><label>模型 ID（留空使用全局默认）<input value={agentModel} onChange={(event) => setAgentModel(event.target.value)} placeholder="qwen-plus" /></label><p>核心三个 agent 可通过本地 Python 服务调用 Qwen。新成员已有通用调用接口，自动唤醒仍需接入路由执行器。</p><button className="primary-button" onClick={saveAgent} disabled={!agentName.trim() || !agentDescription.trim()}>{editingAgentId ? "保存更改" : "添加到 Group"}</button></div></div>}
     {apiOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setApiOpen(false); }}><div className="agent-modal panel"><div className="modal-head"><div><span className="eyebrow">LOCAL MODEL CONNECTION</span><h2>Qwen API 配置</h2></div><button className="icon-button" onClick={() => setApiOpen(false)}><X size={19} /></button></div><p>百炼 API Key 发送到本机 127.0.0.1:8765 服务，只在该 Python 进程内存中保存；浏览器不会持久化 Key。</p><label>百炼 Qwen API Key<input type="password" autoComplete="off" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder={apiConfig?.configured ? "已配置；留空保持现有 Key" : "sk-..."} /></label><label>Base URL（与 Key 地域一致）<input value={baseUrlDraft} onChange={(event) => setBaseUrlDraft(event.target.value)} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" /></label><label>默认模型 ID<input value={defaultModelDraft} onChange={(event) => setDefaultModelDraft(event.target.value)} placeholder="qwen-plus" /></label><div className="api-status">本地服务：{apiConfig ? "已连接" : "未连接"} · Key：{apiConfig?.configured ? "已配置" : "未配置"}</div><div className="api-actions"><button className="outline-button" onClick={() => void testAPI()} disabled={!apiConfig?.configured}>测试连接</button><button className="primary-button" onClick={() => void saveAPI()} disabled={!defaultModelDraft.trim() || !baseUrlDraft.trim()}>保存到本机服务</button></div></div></div>}
