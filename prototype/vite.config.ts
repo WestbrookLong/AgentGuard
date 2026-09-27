@@ -12,5 +12,5 @@ export default defineConfig({
     { find: /^lucide-react$/, replacement: dependency("lucide-react") },
     { find: /^cytoscape$/, replacement: dependency("cytoscape") },
   ] },
-  server: { fs: { allow: [".."] } },
+  server: { fs: { allow: [".."] }, proxy: { "/api": "http://127.0.0.1:8765" } },
 });

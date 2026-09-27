@@ -3,6 +3,7 @@ import { Activity, ArrowRight, BrainCircuit, CheckCircle2, ChevronRight, CircleH
 import type { AgentDefinition, EventKind, GroupState, GuardReview, RoomEvent } from "./model";
 import { addAgent, addRoute, appendAction, loadState, remember, removeRoute, resetState, saveState, simulateCustomerMessage, simulateEvidence, structuralGuardPlaceholder, updateAgent } from "./runtime";
 import { MemoryView } from "./MemoryView";
+import { api, type APIConfig } from "./api";
 
 type Page = "room" | "agents" | "memory";
 
@@ -43,6 +44,14 @@ export default function App() {
   const [agentName, setAgentName] = useState("");
   const [agentDescription, setAgentDescription] = useState("");
   const [agentTools, setAgentTools] = useState("");
+  const [agentModel, setAgentModel] = useState("");
+  const [apiConfig, setApiConfig] = useState<APIConfig | null>(null);
+  const [apiOpen, setApiOpen] = useState(false);
+  const [apiKeyDraft, setApiKeyDraft] = useState("");
+  const [defaultModelDraft, setDefaultModelDraft] = useState("qwen-plus");
+  const [baseUrlDraft, setBaseUrlDraft] = useState("https://dashscope.aliyuncs.com/compatible-mode/v1");
+  const [liveMode, setLiveMode] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [routeKind, setRouteKind] = useState<EventKind>("message");
   const [routeAgent, setRouteAgent] = useState("support");
   const [guardReview, setGuardReview] = useState<GuardReview | null>(null);
@@ -50,6 +59,7 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => saveState(state), [state]);
+  useEffect(() => { void api.config().then((config) => { setApiConfig(config); setDefaultModelDraft(config.default_model); setBaseUrlDraft(config.base_url); }).catch(() => setApiConfig(null)); }, []);
   useEffect(() => { if (notice) { const timer = setTimeout(() => setNotice(""), 4500); return () => clearTimeout(timer); } }, [notice]);
 
   const groupEvents = state.events.filter((event) => event.channel === "group" && !event.threadId);
@@ -71,23 +81,74 @@ export default function App() {
     const body = threadDraft.trim(); if (!body || !threadRootId) return;
     attempt(() => { setState((current) => appendAction(current, { actorId: "human", kind: "message", channel: "group", body, basisEventIds: [threadRootId], threadId: threadRootId })[0]); setThreadDraft(""); });
   }
-  function postCustomer() {
-    const body = customerDraft.trim(); if (!body) return;
-    attempt(() => { setState((current) => simulateCustomerMessage(current, body)); setCustomerDraft(""); });
+  async function runLive(initial: GroupState, triggerId: string) {
+    setBusy(true);
+    let working = initial;
+    try {
+      const invoke = async (agentId: string, eventId: string): Promise<RoomEvent[]> => {
+        const result = await api.invoke(working, agentId, eventId);
+        const emitted: RoomEvent[] = [];
+        for (const action of result.actions) {
+          if (action.actorId !== agentId) throw new Error("Agent 响应的身份与请求不符");
+          let event: RoomEvent;
+          [working, event] = appendAction(working, action);
+          emitted.push(event);
+          setState(working);
+        }
+        return emitted;
+      };
+      const supportEvents = await invoke("support", triggerId);
+      const caseEvent = supportEvents.find((event) => event.kind === "case");
+      if (!caseEvent || !working.agents.find((agent) => agent.id === "decision")?.active) return;
+      working = remember(working, "room", caseEvent.body, [caseEvent.id], "support");
+      setState(working);
+      const policy = await api.policy();
+      let policyEvent: RoomEvent;
+      [working, policyEvent] = appendAction(working, { actorId: "decision", kind: "policy", channel: "group", body: `${policy.policy_id}\n${policy.text}`, basisEventIds: [caseEvent.id] });
+      setState(working);
+      const decisionEvents = await invoke("decision", policyEvent.id);
+      const decisionEvent = decisionEvents.find((event) => event.kind === "decision");
+      if (!decisionEvent || !working.agents.find((agent) => agent.id === "refund")?.active) return;
+      working = remember(working, "decision", decisionEvent.body, [decisionEvent.id, policyEvent.id], "decision");
+      setState(working);
+      const refundEvents = await invoke("refund", decisionEvent.id);
+      const report = refundEvents.find((event) => event.kind === "report");
+      if (report) {
+        working = remember(working, "refund", report.body, [report.id], "refund");
+        setState(working);
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
   }
-  function uploadEvidence(file: File | undefined) {
-    if (!file) return;
-    attempt(() => setState((current) => simulateEvidence(current, file.name)));
+  async function postCustomer() {
+    const body = customerDraft.trim(); if (!body || busy) return;
+    if (liveMode && !apiConfig?.configured) { setNotice("请先在 API 配置中输入 Qwen API Key"); return; }
+    setCustomerDraft("");
+    if (!liveMode) { attempt(() => setState((current) => simulateCustomerMessage(current, body))); return; }
+    const [next, event] = appendAction(state, { actorId: "customer", kind: "message", channel: "customer", body, basisEventIds: [] });
+    setState(next);
+    await runLive(next, event.id);
+  }
+  async function uploadEvidence(file: File | undefined) {
+    if (!file || busy) return;
     if (fileRef.current) fileRef.current.value = "";
+    if (!liveMode) { attempt(() => setState((current) => simulateEvidence(current, file.name))); return; }
+    if (!apiConfig?.configured) { setNotice("请先在 API 配置中输入 Qwen API Key"); return; }
+    const [next, event] = appendAction(state, { actorId: "customer", kind: "evidence", channel: "customer", body: `已上传证据：${file.name}（文件内容尚未读取）`, basisEventIds: [] });
+    setState(next);
+    await runLive(next, event.id);
   }
   function openAgentForm(agent?: AgentDefinition) {
-    setEditingAgentId(agent?.id || null); setAgentName(agent?.name || ""); setAgentDescription(agent?.description || ""); setAgentTools(agent?.tools.join(", ") || ""); setShowAgentForm(true);
+    setEditingAgentId(agent?.id || null); setAgentName(agent?.name || ""); setAgentDescription(agent?.description || ""); setAgentTools(agent?.tools.join(", ") || ""); setAgentModel(agent?.model || ""); setShowAgentForm(true);
   }
   function saveAgent() {
     if (!agentName.trim() || !agentDescription.trim()) return;
     setState((current) => editingAgentId
-      ? updateAgent(current, editingAgentId, { name: agentName.trim(), role: agentDescription.trim().slice(0, 30), description: agentDescription.trim(), tools: agentTools.split(",").map((item) => item.trim()).filter(Boolean) })
-      : addAgent(current, agentName, agentDescription, agentTools));
+      ? updateAgent(current, editingAgentId, { name: agentName.trim(), role: agentDescription.trim().slice(0, 30), description: agentDescription.trim(), tools: agentTools.split(",").map((item) => item.trim()).filter(Boolean), model: agentModel.trim() })
+      : addAgent(current, agentName, agentDescription, agentTools, agentModel));
     setShowAgentForm(false);
   }
   function navigateToEvent(eventId: string) {
@@ -95,6 +156,21 @@ export default function App() {
     setPage("room"); setSelectedEventId(eventId);
     if (event.threadId) setThreadRootId(event.threadId);
     window.setTimeout(() => document.getElementById(`event-${eventId}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+  }
+
+  async function saveAPI() {
+    try {
+      const config = await api.saveConfig(apiKeyDraft, defaultModelDraft, baseUrlDraft);
+      setApiConfig(config);
+      setApiKeyDraft("");
+      setApiOpen(false);
+      setNotice(config.configured ? "Qwen API 已在本地服务中配置" : "请输入 API Key 完成配置");
+    } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
+  }
+
+  async function testAPI() {
+    try { const result = await api.testConnection(); setNotice(result.ok ? "Qwen API 连接成功" : "Qwen API 返回了异常结果"); }
+    catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
   }
 
   return <div className="app-shell">
@@ -105,11 +181,11 @@ export default function App() {
         <button className={page === "agents" ? "active" : ""} onClick={() => setPage("agents")} title="Agent 成员"><Users size={21} /></button>
         <button className={page === "memory" ? "active" : ""} onClick={() => setPage("memory")} title="记忆图景"><BrainCircuit size={21} /></button>
       </nav>
-      <div className="rail-bottom"><button title="重置本地演示" onClick={() => { setState(resetState()); setThreadRootId(null); setGuardReview(null); setNotice("演示已重置"); }}><RotateCcw size={19} /></button></div>
+      <div className="rail-bottom"><button title="Qwen API 配置" onClick={() => setApiOpen(true)}><Settings2 size={19} /></button><button title="重置本地演示" onClick={() => { setState(resetState()); setThreadRootId(null); setGuardReview(null); setNotice("演示已重置"); }}><RotateCcw size={19} /></button></div>
     </aside>
 
     <div className="main-shell">
-      <header className="topbar"><div className="breadcrumb"><span>WORKSPACE</span><ChevronRight size={14} /><strong>ShopCo 退款协作</strong><span className="version-pill">GROUP v{state.version}</span></div><div className="top-actions"><span className="live-dot" /> 本地原型 <button onClick={() => setPage("agents")}><Settings2 size={16} /> 配置成员</button></div></header>
+      <header className="topbar"><div className="breadcrumb"><span>WORKSPACE</span><ChevronRight size={14} /><strong>ShopCo 退款协作</strong><span className="version-pill">GROUP v{state.version}</span></div><div className="top-actions"><span className="live-dot" /> 本地原型 <button onClick={() => setApiOpen(true)}><Settings2 size={16} /> Qwen API {apiConfig?.configured ? "已配置" : "配置"}</button><button onClick={() => setPage("agents")}>配置成员</button></div></header>
 
       {page === "room" && <div className="workspace-page">
         <div className="page-heading"><div><span className="eyebrow">FLAT AGENT GROUP</span><h1>协作 Room</h1><p>主消息流、thread 和客户测试共用一份可追溯事件记录。</p></div><div className="heading-metric"><strong>{activeCount}</strong><span>活跃成员</span></div></div>
@@ -122,9 +198,10 @@ export default function App() {
 
           <section className="customer-panel panel">
             <div className="panel-header"><div className="panel-title"><MessageCircle size={18} /><div><strong>客户测试窗口</strong><small>模拟真实客服的多轮对话</small></div></div><span className="sandbox-badge">SANDBOX</span></div>
+            <div className="mode-switch"><button className={!liveMode ? "selected" : ""} disabled={busy} onClick={() => setLiveMode(false)}>固定脚本</button><button className={liveMode ? "selected" : ""} disabled={busy} onClick={() => setLiveMode(true)}>Qwen 实时调用</button>{busy && <span>Agent 正在处理…</span>}</div>
             <div className="customer-feed">{customerEvents.length === 0 ? <div className="empty-customer"><Sparkles size={27} /><strong>开始一次退款对话</strong><p>发送“我想为订单 #1182 申请退款”，再上传证据文件，观察三个 agent 如何协作。</p></div> : customerEvents.map((event) => <div key={event.id} id={`event-${event.id}`} className={`customer-bubble ${event.actorId === "customer" ? "from-customer" : "from-support"} ${selectedEventId === event.id ? "focused" : ""}`}><small>{event.actorId === "customer" ? "客户" : "Support"} · {time(event.createdAt)} · #{event.sequence}</small><p>{event.body}</p></div>)}</div>
-            <div className="customer-composer"><input ref={fileRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.txt" hidden onChange={(event) => uploadEvidence(event.target.files?.[0])} /><button className="attach-button" title="上传证据元数据" onClick={() => fileRef.current?.click()}><FileUp size={18} /></button><input value={customerDraft} placeholder="以客户身份发送消息…" onChange={(event) => setCustomerDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") postCustomer(); }} /><button onClick={postCustomer} disabled={!customerDraft.trim()}><ArrowRight size={17} /></button></div>
-            <div className="customer-note"><CircleHelp size={13} />演示使用固定脚本；上传只记录文件名，不读取文件内容。</div>
+            <div className="customer-composer"><input ref={fileRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.txt" hidden onChange={(event) => void uploadEvidence(event.target.files?.[0])} /><button className="attach-button" title="上传证据元数据" disabled={busy} onClick={() => fileRef.current?.click()}><FileUp size={18} /></button><input value={customerDraft} disabled={busy} placeholder="以客户身份发送消息…" onChange={(event) => setCustomerDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void postCustomer(); }} /><button onClick={() => void postCustomer()} disabled={busy || !customerDraft.trim()}><ArrowRight size={17} /></button></div>
+            <div className="customer-note"><CircleHelp size={13} />{liveMode ? "由本地 Python 服务调用 Qwen；上传只记录文件名，不读取文件内容。" : "演示使用固定脚本；上传只记录文件名，不读取文件内容。"}</div>
           </section>
 
           <aside className="context-panel">
@@ -144,7 +221,8 @@ export default function App() {
 
     {threadRoot && page === "room" && <div className="thread-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setThreadRootId(null); }}><aside className="thread-panel"><div className="thread-header"><div><span className="eyebrow">THREAD</span><h2>围绕一条消息继续讨论</h2></div><button className="icon-button" onClick={() => setThreadRootId(null)}><X size={19} /></button></div><div className="thread-feed"><EventCard event={threadRoot} state={state} selected={selectedEventId === threadRoot.id} />{threadEvents.map((event) => <EventCard key={event.id} event={event} state={state} selected={selectedEventId === event.id} />)}</div><div className="composer"><textarea rows={3} value={threadDraft} placeholder="回复这个 thread…" onChange={(event) => setThreadDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); postThread(); } }} /><div><span>回复会引用 thread 根事件</span><button onClick={postThread} disabled={!threadDraft.trim()}><Send size={15} />回复</button></div></div></aside></div>}
 
-    {showAgentForm && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAgentForm(false); }}><div className="agent-modal panel"><div className="modal-head"><div><span className="eyebrow">AGENT MANIFEST</span><h2>{editingAgentId ? "编辑 agent" : "添加 agent"}</h2></div><button className="icon-button" onClick={() => setShowAgentForm(false)}><X size={19} /></button></div><label>名称<input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="例如 Evidence Reviewer" /></label><label>职责描述<textarea value={agentDescription} onChange={(event) => setAgentDescription(event.target.value)} rows={4} placeholder="描述这个 agent 负责什么、何时行动…" /></label><label>所需工具（逗号分隔）<input value={agentTools} onChange={(event) => setAgentTools(event.target.value)} placeholder="get_order, search_policy" /></label><p>自然语言生成配置和真实适配器将在后续接入；这里保存的是可编辑的 Agent manifest 草案。</p><button className="primary-button" onClick={saveAgent} disabled={!agentName.trim() || !agentDescription.trim()}>{editingAgentId ? "保存更改" : "添加到 Group"}</button></div></div>}
+    {showAgentForm && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAgentForm(false); }}><div className="agent-modal panel"><div className="modal-head"><div><span className="eyebrow">AGENT MANIFEST</span><h2>{editingAgentId ? "编辑 agent" : "添加 agent"}</h2></div><button className="icon-button" onClick={() => setShowAgentForm(false)}><X size={19} /></button></div><label>名称<input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="例如 Evidence Reviewer" /></label><label>职责描述<textarea value={agentDescription} onChange={(event) => setAgentDescription(event.target.value)} rows={4} placeholder="描述这个 agent 负责什么、何时行动…" /></label><label>所需工具（逗号分隔）<input value={agentTools} onChange={(event) => setAgentTools(event.target.value)} placeholder="get_order, search_policy" /></label><label>模型 ID（留空使用全局默认）<input value={agentModel} onChange={(event) => setAgentModel(event.target.value)} placeholder="qwen-plus" /></label><p>核心三个 agent 可通过本地 Python 服务调用 Qwen。新成员已有通用调用接口，自动唤醒仍需接入路由执行器。</p><button className="primary-button" onClick={saveAgent} disabled={!agentName.trim() || !agentDescription.trim()}>{editingAgentId ? "保存更改" : "添加到 Group"}</button></div></div>}
+    {apiOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setApiOpen(false); }}><div className="agent-modal panel"><div className="modal-head"><div><span className="eyebrow">LOCAL MODEL CONNECTION</span><h2>Qwen API 配置</h2></div><button className="icon-button" onClick={() => setApiOpen(false)}><X size={19} /></button></div><p>百炼 API Key 发送到本机 127.0.0.1:8765 服务，只在该 Python 进程内存中保存；浏览器不会持久化 Key。</p><label>百炼 Qwen API Key<input type="password" autoComplete="off" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder={apiConfig?.configured ? "已配置；留空保持现有 Key" : "sk-..."} /></label><label>Base URL（与 Key 地域一致）<input value={baseUrlDraft} onChange={(event) => setBaseUrlDraft(event.target.value)} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" /></label><label>默认模型 ID<input value={defaultModelDraft} onChange={(event) => setDefaultModelDraft(event.target.value)} placeholder="qwen-plus" /></label><div className="api-status">本地服务：{apiConfig ? "已连接" : "未连接"} · Key：{apiConfig?.configured ? "已配置" : "未配置"}</div><div className="api-actions"><button className="outline-button" onClick={() => void testAPI()} disabled={!apiConfig?.configured}>测试连接</button><button className="primary-button" onClick={() => void saveAPI()} disabled={!defaultModelDraft.trim() || !baseUrlDraft.trim()}>保存到本机服务</button></div></div></div>}
     {notice && <div className="toast">{notice}</div>}
   </div>;
 }

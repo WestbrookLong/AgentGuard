@@ -10,6 +10,7 @@ export interface AgentDefinition {
   tools: string[];
   color: string;
   active: boolean;
+  model?: string;
 }
 
 export interface RoomEvent {

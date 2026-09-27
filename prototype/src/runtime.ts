@@ -81,7 +81,7 @@ export function appendAction(state: GroupState, action: ProposedAction): [GroupS
   return [{ ...state, events: [...state.events, event] }, event];
 }
 
-export function addAgent(state: GroupState, name: string, description: string, toolsText: string): GroupState {
+export function addAgent(state: GroupState, name: string, description: string, toolsText: string, model = ""): GroupState {
   const agentId = id("agent");
   const agent: AgentDefinition = {
     id: agentId,
@@ -91,6 +91,7 @@ export function addAgent(state: GroupState, name: string, description: string, t
     tools: toolsText.split(",").map((tool) => tool.trim()).filter(Boolean),
     color: colors[state.agents.length % colors.length],
     active: true,
+    model: model.trim(),
   };
   return { ...state, version: state.version + 1, agents: [...state.agents, agent] };
 }

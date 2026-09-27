@@ -2,3 +2,5 @@ node_modules/
 dist/
 .preview/
 *.tsbuildinfo
+__pycache__/
+*.pyc
